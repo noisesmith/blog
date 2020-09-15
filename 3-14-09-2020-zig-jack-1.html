@@ -1,0 +1,83 @@
+<h1>zig and jack audio connection kit, part 1</h1>
+<a href="../blog">blog</a>
+
+<p>as a follow up from my second blog post, I'm retelling my work so far on the port of the <a href="https://jackaudio.org/">jack audio connection kit</a> example client to <a href="https://ziglang.org/">zig</a>. see that post if you want to know the why, this is the how and the what.</p>
+<!-- 
+from here down I intend to translate my initial commit on the zig/jack project into steps that each compile and run>
+</!-->
+<p>for starters, I will use the <a href="https://github.com/jackaudio/example-clients/blob/master/simple_client.c">jack simple example client</a>. much like /bin/cat it copies an input to an output (and much like /bin/cat it might be good for pedagogical purposes or pathological fallback, but you are better off doing something this basic in-process instead of using a dedicated program).</p>
+<p>to start with we have the declarations, I'm going to be lazy and only bring declarations into zig as we know we need them. but surely we need jack itself
+<figure>
+  <figcaption><h3>simple_client.c, starting on line 7 as of commit <a href="https://github.com/jackaudio/example-clients/commit/4b9f2362b4a0d15f18bfce6056d3ca897db9b401#diff-7080b2cccbc9270d89d0acffd807e739R7">4b9f2362</a>:</h3></figcaption>
+  <pre><code>
+#include &lt;stdio.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+#include &lt;jack/jack.h&gt;
+</code></pre>
+</figure>
+<figure>
+  <figcaption><h3>first zig translation:</h3></figcaption>
+<code><pre>
+const std = @import("std");
+const print = std.debug.print;
+
+const c = @cImport({
+    @cInclude("&lt;jack/jack.h&gt;");
+})
+
+// cheating and including a main early so we can exploit the zig build tooling
+pub fn main() void {
+  print("jack client startup\n", .{});
+}
+</code></pre></figure></p>
+<p>I just followed the docs here, and looked for the section on using c libs, and picked <a href="https://ziglang.org/documentation/0.6.0/#Import-from-C-Header-File">a likely source example to copy from</a>.</p>
+<p>that's a decent start, and if we add a few more lines (if we end up actually using jack.h at runtime instead of in compile time statics), we run into our first compile error
+<figure><figcaption><h3>zig C import compile error:</h3></figcaption>
+  <code><pre>
+:!make
+z build-exe noiser.zig -lc -ljack
+./noiser.zig:5:11: error: C import failed
+const c = @cImport({
+          ^
+./zig-cache/o/1k0L3mjnO2Et7Cb94XPnG2cGYcFLIjVqd82b9u8Cz1-M2-ci8LWmKabEwBOt0iY5/cimport.h:1:10: note: '&lt;jack/jack.h' file not found
+#include &lt;&lt;jack/jack.h&gt;&gt;
+         ^
+./noiser.zig:19:30: note: referenced here
+    var options = @intToEnum(c.jack_options_t, c.JackNullOption);
+                             ^
+make: *** [Makefile:2: noiser] Error 1
+
+shell returned 2
+    </pre></code></figure>
+using some context clues even without knowing any zig (or c even) we know what to try next: if we asked for <code>&lt;foo&gt;</code> and it looked for <code>&lt;&lt;foo&gt;&gt;</code>, we can probably ask for <code>foo</code> and get what we want. this in fact does work as expected. our next set of questions come up with the translation of c types. we will find that the zig types are more precise, consistent, and intuitive, but that doesn't mean that the translation from a c example is always easy.
+<figure><figcaption><h3>some types used in the original:</h3></figcaption><code><pre>
+int
+main (int argc, char *argv[])
+{
+	const char **ports;
+	const char *client_name = "simple";
+	const char *server_name = NULL;
+	jack_options_t options = JackNullOption;
+	jack_status_t status;
+</pre></code></figure>
+<figure><figcaption><h3>some type conversion attempts:</h3></figcaption><code><pre>
+pub fn main() void {
+    var ports: *[]const u8 = undefined;
+    var client_name = "simple";
+    var server_name: *const u8 = undefined;
+    var options = @intToEnum(c.jack_options_t, c.JackNullOption);
+    var status: [*c].c.jack_status_t = undefined;
+</pre></code></figure>
+breaking this down a bit, we have quite a few translations needed for a variety of parameters and usages.
+<ul>
+  <li><code>ports<code> is relatively straightforward - <code>char</code> becomes <code>u8</code> with the <code>const / **</code> becoming <code>*[]const</code>. I like how the const modifier is explicitly after the  * for pointer, which doesn't look like part of the identifier. also notice that the var must be initialized, even if using the "undefined" placeholder</li>
+  <li><code>client_name</code> I just let be with type inference giving the actual type - as I get more comfortable with zig I'll likely let more and more types remain inferred</li>
+  <li><code>server_name</code> is a simpler variant on ports.</li>
+  <li><code>options</code> was a tricky beast to hack out. The entry from the header file is read as an int, so I need the <code>@intToEnum</code> built in to make it fit the original declaration. I strongly suspect I'm missing something simpler and clearer here.</li>
+  <li><code>status</code> was hard to sort out because it gets used as an "output argument", so I need the right kind of pointer to get the status bits assigned. this is also likely more complex than it needs to be, and I would like to be able to parse out the parts of <code>[*c].c.jack_status_t</code> but it's currently black magic that seems to work.
+</ul>
+</p>
